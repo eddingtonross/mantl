@@ -3,6 +3,7 @@
                                  RuleContext
                                  CommonTokenStream
                                  ListTokenSource
+                                 CommonToken
                                  Token)
            (org.antlr.v4.runtime.tree ParseTreeWalker
                                       RuleNode
@@ -25,15 +26,27 @@
        :channel (.getChannel e)
        :type (.getType e)
        :index (.getTokenIndex e)
-       ;Avoid TokenSource
-       ;Don't wrap stateful InputStream in an atom - too expensive
-     ;  :input-stream (atom (.getInputStream e))
+       ;Avoid stateful TokenSource and InputStream and hope non-breaking
        }
       ;.getStart/StopIndex return -1 if not implemented
       (if (>= startIndex 0)
         {:start-index startIndex})
       (if (>= stopIndex 0)
         {:stop-index stopIndex}))))
+
+;The TokenSource and InputStream are kaput by now
+;Invariant: (comp unwrap-token wrap-token unwrap-token) = unwrap-token (on its domain)
+(defn wrap-token
+  [t]
+  (doto
+    (CommonToken. (:type t) (:value t))
+    (.setChannel (:channel t))
+    (.setLine (:line t))
+    (.setCharPositionInLine (:position t))
+    (.setTokenIndex (:index t))
+    (.setStartIndex (get t :start-index -1))
+    (.setStopIndex (get t :stop-index -1))))
+
 
 (defn- unproper-name
   "Takes a string and converts the first letter to lower case."
@@ -77,6 +90,7 @@
              ANTLRInputStream.
              (new ~(lexerClassname grammar))
              .getAllTokens
+             (map unwrap-token)
              )))))
   ([grammar] `(lexer ~grammar nil)))
 
@@ -90,6 +104,7 @@
           (->
             (doto
               (->> ~source
+                   (map wrap-token)
                    ListTokenSource.
                    CommonTokenStream.
                    (new ~(parserClassname grammar)))
