@@ -4,6 +4,7 @@
                                  CommonTokenStream
                                  ListTokenSource
                                  CommonToken
+                                 ParserRuleContext
                                  Token)
            (org.antlr.v4.runtime.tree ParseTreeWalker
                                       RuleNode
@@ -48,6 +49,21 @@
     (.setStopIndex (get t :stop-index -1))))
 
 
+;(defn- build-tree 
+;  "Takes a ParseTree and recursively turns it into a Clojure data structure."
+;  [e]
+;  (cond
+;    (keyword? e) e
+;    (instance? ErrorNode e) (unwrap-error (.getSymbol e))
+;    (instance? TerminalNode e) (unwrap-token (.getSymbol e))
+;    (instance? RuleNode e) {:rule-name (rule-name e)
+;                            :src-line (antlr-token-line (.getStop e))
+;                            :arguments (map build-tree (.children e))}
+;    :else (throw (Exception. (str "Error: unknown parseTree in build-tree at: " e)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Text Mangling
+
 (defn- unproper-name
   "Takes a string and converts the first letter to lower case."
   [s]
@@ -57,6 +73,49 @@
   (apply str
     (cons (Character/toLowerCase (first s)) (rest s))))
 
+;TODO: Better name
+; Use on (.getSimpleName)
+(defn remove-context
+  "Gets the name of a rule extracting it from the generated class
+  name. This is used over the array tokenNames
+  in the Parser because this does not contain labelled rules in the grammar
+  (i.e. rules names with #...)."
+    [x]
+    {:pre [(string? x)
+           (.endsWith x "Context")]}
+    (let  [name-len (- (.length x) 7)]
+    ;Make the name lower case
+    (unproper-name (.substring x 0 name-len))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;Reflection magic
+(defn invoke [m o & args]
+  (.invoke m o (into-array args)))
+
+; ANTLR4 adds:
+;   getRuleIndex
+;   ruleName()
+;   ruleName(int i) [if more than one rule name]
+(defn named-rules [c]
+  {:pre [(instance? ParserRuleContext c)]}
+  (let [named-meths
+        (->> (class c)
+             .getDeclaredMethods
+             (filter #(zero? (.getParameterCount %)))
+             (filter #(isa? (.getReturnType %) Object)))]
+    (zipmap (map #(keyword (.getName %)) named-meths)
+            (map #(invoke % c) named-meths))))
+
+;TODO: Make sure named-rules don't clash with predefined ones!
+(defn wrap-rule [r]
+  (merge {:rule-name (remove-context (.getSimpleName (class r)))
+          :src-line (.getStop r)
+          :child-ren (.children r)}
+         (named-rules r)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn- count-newlines [s]
   "Counts the number of occurances of newlines in a String"
   {:pre [(string? s)]}
@@ -110,41 +169,30 @@
                    (new ~(parserClassname grammar)))
               ;Don't print to std out
               .removeErrorListeners)
-            (. ~rule))))))
+            (. ~rule)
+            build-tree)))))
   ([rule grammar] `(parser ~rule ~grammar nil)))
 
 
 (defmacro lexer-parser
-  ([grammar package]
+  ([rule grammar package]
    (let [arg (gensym)]
      `(do
         (importLexer ~grammar ~package)
         (importParser ~grammar ~package)
         (fn [~arg]
-          (doto
-            (->>
-              ~arg
-              ANTLRInputStream.
-              (new ~(lexerClassname grammar))
-              CommonTokenStream.
-              (new ~(parserClassname grammar)))
-            ;Don't print errors to STDOUT
-            .removeErrorListeners)))))
-  ([grammar] `(lexer-parser ~grammar nil)))
-
-
-;(defn antlr-parse
-;  "Returns the top level rule (program) of the ANTLR parse of the
-;  Java program s."
-;  [s]
-;  (let [parser (doto
-;                 (-> s
-;                     ANTLRInputStream.
-;                     JavaLexer.
-;                     CommonTokenStream.
-;                     JavaParser.)
-;                 ;Deal with errors in our own way
-;                 .removeErrorListeners)]
-;    (.compilationUnit parser)))
+          (->
+            (doto
+              (->>
+                ~arg
+                ANTLRInputStream.
+                (new ~(lexerClassname grammar))
+                CommonTokenStream.
+                (new ~(parserClassname grammar)))
+              ;Don't print errors to STDOUT
+              .removeErrorListeners)
+            (. ~rule)
+            build-tree)))))
+  ([rule grammar] `(lexer-parser ~rule ~grammar nil)))
 
 
