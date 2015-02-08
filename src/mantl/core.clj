@@ -6,6 +6,7 @@
                                  CommonToken
                                  ParserRuleContext
                                  Token)
+           (org.antlr.v4.runtime.misc Pair)
            (org.antlr.v4.runtime.tree ParseTreeWalker
                                       RuleNode
                                       ErrorNode
@@ -38,16 +39,29 @@
 ;The TokenSource and InputStream are kaput by now
 ;Invariant: (comp unwrap-token wrap-token unwrap-token) = unwrap-token (on its domain)
 (defn wrap-token
-  [t]
+  [t token-source char-source]
   (doto
-    (CommonToken. (:type t) (:value t))
-    (.setChannel (:channel t))
-    (.setLine (:line t))
+    (CommonToken. (Pair. token-source char-source)
+                  (:type t)
+                  (:channel t)
+                  (:start-index t)
+                  (:stop-index t))
     (.setCharPositionInLine (:position t))
     (.setTokenIndex (:index t))
-    (.setStartIndex (get t :start-index -1))
-    (.setStopIndex (get t :stop-index -1))))
+    (.setText (:value t))
+    (.setLine (:line t))))
 
+;TODO: Better name
+; This is the bottleneck
+(defn token-source [tokens]
+  (let [token-list (java.util.ArrayList.)
+        list-token-source (ListTokenSource. token-list)]
+    (doall
+      ;Allow for the possibility of an inputStream in the token
+      (map #(.add token-list (wrap-token % list-token-source (:charSource %)))
+           tokens))
+    list-token-source))
+      
 ;(defn- build-tree 
 ;  "Takes a ParseTree and recursively turns it into a Clojure data structure."
 ;  [e]
@@ -177,8 +191,7 @@
      `(fn [~source]
         (->
           (->> ~source
-               (map wrap-token)
-               ListTokenSource.
+               token-source
                CommonTokenStream.
                ((ANTLR-parser ~grammar ~package))
                )
