@@ -48,7 +48,6 @@
     (.setStartIndex (get t :start-index -1))
     (.setStopIndex (get t :stop-index -1))))
 
-
 ;(defn- build-tree 
 ;  "Takes a ParseTree and recursively turns it into a Clojure data structure."
 ;  [e]
@@ -139,60 +138,74 @@
      `(import (~package ~(parserClassname grammar))))
      `(import ~(parserClassname grammar))))
 
-(defmacro lexer 
+(defmacro ANTLR-lexer
+  "Generates a Lexer as from ANTLR. Break through the abstraction; prefer lexer."
   ([grammar package]
    (let [arg (gensym)]
      `(do
         (importLexer ~grammar ~package)
         (fn [~arg]
-          (->> ~arg
+          (new ~(lexerClassname grammar) ~arg)))))
+  ([grammar] `(ANTLR-lexer ~grammar nil)))
+
+(defmacro lexer 
+  ([grammar package]
+   (let [arg (gensym)]
+     `(fn [~arg]
+        (->> ~arg
              ANTLRInputStream.
-             (new ~(lexerClassname grammar))
+             ((ANTLR-lexer ~grammar ~package))
              .getAllTokens
              (map unwrap-token)
-             )))))
+             ))))
   ([grammar] `(lexer ~grammar nil)))
+
+(defmacro ANTLR-parser
+  "Generates an ANTLR type parser. Break through abstraction layer; prefer parser."
+  ([grammar package]
+   (let [token-stream (gensym)]
+     `(do
+        (importParser ~grammar ~package)
+        (fn [~token-stream]
+          (new ~(parserClassname grammar) ~token-stream)))))
+  ([grammar] `(ANTLR-parser ~grammar nil)))
 
 (defmacro parser
   ;Inefficient for multiple partial parsers: Could share structure
   ([rule grammar package]
    (let [source (gensym)]
-     `(do
-        (importParser ~grammar ~package)
-        (fn [~source]
-          (->
-            (doto
-              (->> ~source
-                   (map wrap-token)
-                   ListTokenSource.
-                   CommonTokenStream.
-                   (new ~(parserClassname grammar)))
-              ;Don't print to std out
-              .removeErrorListeners)
-            (. ~rule)
-            build-tree)))))
+     `(fn [~source]
+        (->
+          (->> ~source
+               (map wrap-token)
+               ListTokenSource.
+               CommonTokenStream.
+               ((ANTLR-parser ~grammar ~package))
+               )
+          ;Don't print to std out
+          (doto .removeErrorListeners)
+          (. ~rule)
+          ;Do something here to build the tree
+            ;build-tree)))))
+            ))))
   ([rule grammar] `(parser ~rule ~grammar nil)))
 
 
 (defmacro lexer-parser
   ([rule grammar package]
    (let [arg (gensym)]
-     `(do
-        (importLexer ~grammar ~package)
-        (importParser ~grammar ~package)
-        (fn [~arg]
-          (->
-            (doto
-              (->>
-                ~arg
-                ANTLRInputStream.
-                (new ~(lexerClassname grammar))
-                CommonTokenStream.
-                (new ~(parserClassname grammar)))
-              ;Don't print errors to STDOUT
-              .removeErrorListeners)
-            (. ~rule)
-            build-tree)))))
+     `(fn [~arg]
+        (->
+          ~arg
+          ANTLRInputStream.
+          ((ANTLR-lexer ~grammar ~package))
+          CommonTokenStream.
+          ((ANTLR-parser ~grammar ~package))
+          ;Don't print errors to STDOUT
+          (doto .removeErrorListeners)
+          (. ~rule)
+            ;build-tree)))))
+            ))))
   ([rule grammar] `(lexer-parser ~rule ~grammar nil)))
 
 
