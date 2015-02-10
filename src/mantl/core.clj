@@ -5,6 +5,7 @@
                                  ListTokenSource
                                  CommonToken
                                  ParserRuleContext
+                                 TokenFactory
                                  Token)
            (org.antlr.v4.runtime.misc Pair)
            (org.antlr.v4.runtime.tree ParseTreeWalker
@@ -13,55 +14,35 @@
                                       TerminalNode))
   (:require clojure.walk))
 
-;;Unwrapping
-(defn unwrap-token
-  "Takes an ANTLR Token and returns a Clojure datatype representing that Token."
-  [e]
-  {:pre [(instance? Token e)]}
-  (let [startIndex (.getStartIndex e)
-        stopIndex (.getStopIndex e)]
-    (merge
-      {;:token-name (token-name e)
-       :value (.getText e)
-       :line (.getLine e)
-       :position (.getCharPositionInLine e)
-       :channel (.getChannel e)
-       :type (.getType e)
-       :index (.getTokenIndex e)
-       ;Avoid stateful TokenSource and InputStream and hope non-breaking
-       }
-      ;.getStart/StopIndex return -1 if not implemented
-      (if (>= startIndex 0)
-        {:start-index startIndex})
-      (if (>= stopIndex 0)
-        {:stop-index stopIndex}))))
+;This is an immutable equivalent of an ANTLR4 token; all it is missing is the
+; InputStream (which by it's nature is mutable) and the
+; TokenSource (which is often mutable). These immutable fields still (more-than)
+; represent the useful information in a token.
+(defrecord token
+  [type text channel start-index stop-index line position-in-line token-index]
+  Token
+  (getChannel [this] (or channel Token/DEFAULT_CHANNEL))
+  (getCharPositionInLine [this] (or position-in-line 0))
+  (getInputStream [this] nil)
+  (getLine [this] (or line 0))
+  (getStartIndex [this] (or start-index -1))
+  (getStopIndex [this] (or stop-index -1))
+  (getText [this] text)
+  (getTokenIndex [this] token-index)
+  (getTokenSource [this] nil)
+  (getType [this] type))
 
-;The TokenSource and InputStream are kaput by now
-;Invariant: (comp unwrap-token wrap-token unwrap-token) = unwrap-token (on its domain)
-(defn wrap-token
-  [t token-source char-source]
-  (doto
-    (CommonToken. (Pair. token-source char-source)
-                  (:type t)
-                  (:channel t)
-                  (:start-index t)
-                  (:stop-index t))
-    (.setCharPositionInLine (:position t))
-    (.setTokenIndex (:index t))
-    (.setText (:value t))
-    (.setLine (:line t))))
 
-;TODO: Better name
-; This is the bottleneck
-(defn token-source [tokens]
-  (let [token-list (java.util.ArrayList.)
-        list-token-source (ListTokenSource. token-list)]
-    (doall
-      ;Allow for the possibility of an inputStream in the token
-      (map #(.add token-list (wrap-token % list-token-source (:charSource %)))
-           tokens))
-    list-token-source))
+(def token-factory
+  (reify TokenFactory
+    (create [this source type text channel start stop line position-in-line]
+      ;token-index -1 is the convention from CommonTokenFactory
+      (->token type text channel start stop line position-in-line -1)) 
+    (create [this type text]
+      (map->token {:type type :text text}))))
       
+
+
 ;(defn- build-tree 
 ;  "Takes a ParseTree and recursively turns it into a Clojure data structure."
 ;  [e]
@@ -166,11 +147,11 @@
   ([grammar package]
    (let [arg (gensym)]
      `(fn [~arg]
-        (->> ~arg
+        (-> ~arg
              ANTLRInputStream.
              ((ANTLR-lexer ~grammar ~package))
+             (doto (.setTokenFactory token-factory))
              .getAllTokens
-             (map unwrap-token)
              ))))
   ([grammar] `(lexer ~grammar nil)))
 
@@ -191,7 +172,7 @@
      `(fn [~source]
         (->
           (->> ~source
-               token-source
+               ListTokenSource.
                CommonTokenStream.
                ((ANTLR-parser ~grammar ~package))
                )
