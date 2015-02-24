@@ -72,32 +72,12 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
-;Reflection magic
-(defn invoke [m o & args]
-  (.invoke m o (into-array args)))
-
 (declare unwrapper)
 
-; ANTLR4 adds:
-;   getRuleIndex
-;   ruleName()
-;   ruleName(int i) [if more than one rule name]
-(defn named-rules [c]
-  {:pre [(instance? ParserRuleContext c)]}
-  (let [named-meths
-        (->> (class c)
-             .getDeclaredMethods
-             (filter #(zero? (.getParameterCount %)))
-             (filter #(isa? (.getReturnType %) Object)))]
-    (zipmap (map #(keyword (.getName %)) named-meths)
-            (map #(unwrapper (invoke % c)) named-meths))))
-
-;TODO: Make sure named-rules don't clash with predefined ones!
 (defn unwrap-rule [r]
-  (merge {:rule-name (remove-context (.getSimpleName (class r)))
-          :src-line (.getStop r)
-          :rule-children (unwrapper (.children r))}
-         (named-rules r)))
+  {:name (remove-context (.getSimpleName (class r)))
+   :src-line (.getStop r)
+   :children (map unwrapper (.children r))})
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -108,9 +88,6 @@
 
 (defn unwrapper [e]
   (cond
-    (nil? e) e
-    (or (instance? clojure.lang.Seqable e) (instance? java.lang.Iterable e)) (map unwrapper e)
-    (keyword? e) e
     (instance? ErrorNode e) (unwrap-error (.getSymbol e))
     (instance? TerminalNode e) (.getSymbol e)
     (instance? RuleNode e) (unwrap-rule e)
