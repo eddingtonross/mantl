@@ -11,8 +11,7 @@
            (org.antlr.v4.runtime.tree ParseTreeWalker
                                       RuleNode
                                       ErrorNode
-                                      TerminalNode))
-  (:require clojure.walk))
+                                      TerminalNode)))
 
 ;This is an immutable equivalent of an ANTLR4 token; all it is missing is the
 ; InputStream (which by it's nature is mutable) and the
@@ -72,13 +71,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
-(declare unwrapper)
-
 (defn unwrap-rule [r]
-  {:name (remove-context (.getSimpleName (class r)))
-   :src-line (.getStop r)
-   :children (map unwrapper (.children r))})
+  {:type 'rule
+   :name (remove-context (.getSimpleName (class r)))
+   :src-line (.getStop r)})
 
+(defn rule? [r]
+  (and (map? r) (= (:type r) 'rule)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn- unwrap-error 
@@ -93,19 +92,17 @@
     (instance? RuleNode e) (unwrap-rule e)
     :else (throw (Exception. (str "Error: unknown parseTree in build-tree at: " e )))))
 
-;(defn- build-tree 
-;  "Takes a ParseTree and recursively turns it into a Clojure data structure."
-;  [e]
-;  (cond
-;    (keyword? e) e
-;    (instance? ErrorNode e) (unwrap-error (.getSymbol e))
-;    (instance? TerminalNode e) (unwrap-token (.getSymbol e))
-;    (instance? RuleNode e) {:rule-name (rule-name e)
-;                            :src-line (antlr-token-line (.getStop e))
-;                            :arguments (map build-tree (.children e))}
-;    :else (throw (Exception. (str "Error: unknown parseTree in build-tree at: " e)))))
-;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn- tree-map [f branch? children make-branch node]
+  (if (branch? node)
+    (make-branch (f node) (map #(tree-map f branch? children make-branch %) (children node)))
+    (f node)))
+
+(defn total-unwrapper [x] (tree-map unwrapper
+                                    #(instance? RuleNode %)
+                                    #(.children %)
+                                    #(assoc %1 :children %2)
+                                    x))
+
 (defn- count-newlines [s]
   "Counts the number of occurances of newlines in a String"
   {:pre [(string? s)]}
@@ -174,7 +171,7 @@
           ;Don't print to std out
           (doto .removeErrorListeners)
           (. ~rule)
-          unwrapper))))
+          total-unwrapper))))
   ([rule grammar] `(parser ~rule ~grammar nil)))
 
 
@@ -191,7 +188,7 @@
           ;Don't print errors to STDOUT
           (doto .removeErrorListeners)
           (. ~rule)
-          unwrapper))))
+          total-unwrapper))))
   ([rule grammar] `(lexer-parser ~rule ~grammar nil)))
 
 
