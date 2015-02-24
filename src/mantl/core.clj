@@ -43,18 +43,6 @@
       
 
 
-;(defn- build-tree 
-;  "Takes a ParseTree and recursively turns it into a Clojure data structure."
-;  [e]
-;  (cond
-;    (keyword? e) e
-;    (instance? ErrorNode e) (unwrap-error (.getSymbol e))
-;    (instance? TerminalNode e) (unwrap-token (.getSymbol e))
-;    (instance? RuleNode e) {:rule-name (rule-name e)
-;                            :src-line (antlr-token-line (.getStop e))
-;                            :arguments (map build-tree (.children e))}
-;    :else (throw (Exception. (str "Error: unknown parseTree in build-tree at: " e)))))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; Text Mangling
 
@@ -88,6 +76,8 @@
 (defn invoke [m o & args]
   (.invoke m o (into-array args)))
 
+(declare unwrapper)
+
 ; ANTLR4 adds:
 ;   getRuleIndex
 ;   ruleName()
@@ -100,15 +90,44 @@
              (filter #(zero? (.getParameterCount %)))
              (filter #(isa? (.getReturnType %) Object)))]
     (zipmap (map #(keyword (.getName %)) named-meths)
-            (map #(invoke % c) named-meths))))
+            (map #(unwrapper (invoke % c)) named-meths))))
 
 ;TODO: Make sure named-rules don't clash with predefined ones!
-(defn wrap-rule [r]
+(defn unwrap-rule [r]
   (merge {:rule-name (remove-context (.getSimpleName (class r)))
           :src-line (.getStop r)
-          :child-ren (.children r)}
+          :rule-children (unwrapper (.children r))}
          (named-rules r)))
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn- unwrap-error 
+  "Handle an ErrorNode. This is currently inadequate."
+  [e]
+  (throw (Exception. (str "Error in parsing at: " (.getText e)))))
+
+(defn unwrapper [e]
+  (cond
+    (nil? e) e
+    (or (instance? clojure.lang.Seqable e) (instance? java.lang.Iterable e)) (map unwrapper e)
+    (keyword? e) e
+    (instance? ErrorNode e) (unwrap-error (.getSymbol e))
+    (instance? TerminalNode e) (.getSymbol e)
+    (instance? RuleNode e) (unwrap-rule e)
+    :else (throw (Exception. (str "Error: unknown parseTree in build-tree at: " e )))))
+
+;(defn- build-tree 
+;  "Takes a ParseTree and recursively turns it into a Clojure data structure."
+;  [e]
+;  (cond
+;    (keyword? e) e
+;    (instance? ErrorNode e) (unwrap-error (.getSymbol e))
+;    (instance? TerminalNode e) (unwrap-token (.getSymbol e))
+;    (instance? RuleNode e) {:rule-name (rule-name e)
+;                            :src-line (antlr-token-line (.getStop e))
+;                            :arguments (map build-tree (.children e))}
+;    :else (throw (Exception. (str "Error: unknown parseTree in build-tree at: " e)))))
+;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn- count-newlines [s]
   "Counts the number of occurances of newlines in a String"
@@ -171,17 +190,14 @@
    (let [source (gensym)]
      `(fn [~source]
         (->
-          (->> ~source
-               ListTokenSource.
-               CommonTokenStream.
-               ((ANTLR-parser ~grammar ~package))
-               )
+          ~source
+          ListTokenSource.
+          CommonTokenStream.
+          ((ANTLR-parser ~grammar ~package))
           ;Don't print to std out
           (doto .removeErrorListeners)
           (. ~rule)
-          ;Do something here to build the tree
-            ;build-tree)))))
-            ))))
+          unwrapper))))
   ([rule grammar] `(parser ~rule ~grammar nil)))
 
 
@@ -198,8 +214,7 @@
           ;Don't print errors to STDOUT
           (doto .removeErrorListeners)
           (. ~rule)
-            ;build-tree)))))
-            ))))
+          unwrapper))))
   ([rule grammar] `(lexer-parser ~rule ~grammar nil)))
 
 
