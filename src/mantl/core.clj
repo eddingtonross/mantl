@@ -1,15 +1,12 @@
 (ns mantl.core
   (:import (org.antlr.v4.runtime ANTLRInputStream
-                                 RuleContext
                                  CommonTokenStream
                                  ListTokenSource
-                                 CommonToken
-                                 ParserRuleContext
                                  TokenFactory
+                                 BufferedTokenStream
                                  Token)
-           (org.antlr.v4.runtime.misc Pair)
-           (org.antlr.v4.runtime.tree ParseTreeWalker
-                                      RuleNode
+           (org.antlr.v4.runtime.misc Interval)
+           (org.antlr.v4.runtime.tree RuleNode
                                       ErrorNode
                                       TerminalNode)))
 
@@ -31,12 +28,38 @@
   (getTokenSource [this] nil)
   (getType [this] type))
 
+(defn reify-token
+  "Creates an immutable Clojure record from an ANTLR Token."
+  [t]
+  (->token (.getType t) 
+           (.getText t) 
+           (.getChannel t) 
+           (.getStartIndex t)
+           (.getStopIndex t) 
+           (.getLine t) 
+           (.getCharPositionInLine t) 
+           (.getTokenIndex t)))
+
 
 (def token-factory
+  "An ANTLR4 TokenFactory that returns Tokens that are immutable Clojure records.
+  Returned Tokens have the immutable attributes of a CommonToken.
+  Type is a unique integer, dependent on the Lexer identifying the Lexer rule.
+  Text is the String the token was processed from.
+  Channel is the token channel specified in the Lexer.
+  Start is the position in the input String corresponding to the first character of the token.
+  Stop is the position in the input String corresponding to the last character of the token.
+  Line is the number of newlines in the input String preceding the first character of the token.
+  Position-in-line is the number of characters preceeding the first character of the token to the most recent newline."
+  
   (reify TokenFactory
     (create [this source type text channel start stop line position-in-line]
+      (let [char-source (.b source)
+            text-interval (if (<= 0 start stop) (Interval. start stop))
+            ;If the text isn't passed in directly, extract it from the source
+            text (or text (and char-source text-interval (.getText char-source text-interval)))]
       ;token-index -1 is the convention from CommonTokenFactory
-      (->token type text channel start stop line position-in-line -1)) 
+      (->token type text channel start stop line position-in-line -1)))
     (create [this type text]
       (map->token {:type type :text text}))))
       
@@ -54,9 +77,7 @@
   (apply str
     (cons (Character/toLowerCase (first s)) (rest s))))
 
-;TODO: Better name
-; Use on (.getSimpleName)
-(defn remove-context
+(defn- name-from-ANTLR-context
   "Gets the name of a rule extracting it from the generated class
   name. This is used over the array tokenNames
   in the Parser because this does not contain labelled rules in the grammar
@@ -68,28 +89,33 @@
     ;Make the name lower case
     (unproper-name (.substring x 0 name-len))))
 
+(defn- name-of-ANTLR-rule
+  [r]
+  (name-from-ANTLR-context (.getSimpleName (class r))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
-(defn unwrap-rule [r]
+(defn rule->map [r]
   {:type 'rule
-   :name (remove-context (.getSimpleName (class r)))
-   :src-line (.getStop r)})
+   :name (name-of-ANTLR-rule r)
+   :src-line (.getLine (.getStop r))})
 
 (defn rule? [r]
   (and (map? r) (= (:type r) 'rule)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn- unwrap-error 
+(defn error->map 
   "Handle an ErrorNode. This is currently inadequate."
   [e]
-  (throw (Exception. (str "Error in parsing at: " (.getText e)))))
+  {:type 'error
+   :exception (.getText e)})
 
-(defn unwrapper [e]
+(defn unwrapper [rule-fn terminal-fn error-fn e]
   (cond
-    (instance? ErrorNode e) (unwrap-error (.getSymbol e))
-    (instance? TerminalNode e) (.getSymbol e)
-    (instance? RuleNode e) (unwrap-rule e)
+    (instance? ErrorNode e) (error-fn (.getSymbol e))
+    (instance? TerminalNode e) (terminal-fn (.getSymbol e))
+    (instance? RuleNode e) (rule-fn e)
     :else (throw (Exception. (str "Error: unknown parseTree in build-tree at: " e )))))
 
 (defn- tree-map [f branch? children make-branch node]
@@ -97,11 +123,12 @@
     (make-branch (f node) (map #(tree-map f branch? children make-branch %) (children node)))
     (f node)))
 
-(defn total-unwrapper [x] (tree-map unwrapper
+(defn total-unwrapper [u x] (tree-map u
                                     #(instance? RuleNode %)
                                     #(.children %)
                                     #(assoc %1 :children %2)
                                     x))
+
 
 (defn- count-newlines [s]
   "Counts the number of occurances of newlines in a String"
@@ -115,19 +142,23 @@
   (symbol (str grammar "Parser")))
 
 (defmacro importLexer 
+  "Explicitly imports the ANTLR Lexer grammar from package. The Lexer class must be on the classpath."
   ([grammar package]
    (if package
      `(import (~package ~(lexerClassname grammar)))
      `(import ~(lexerClassname grammar)))))
 
 (defmacro importParser 
+  "Explicitly imports the ANTLR Parser grammar from package. The Parser class must be on the classpath."
   ([grammar package]
    (if package
      `(import (~package ~(parserClassname grammar))))
      `(import ~(parserClassname grammar))))
 
 (defmacro ANTLR-lexer
-  "Generates a Lexer as from ANTLR. Break through the abstraction; prefer lexer."
+  "Returns a function taking an ANTLR CharStream into the ANTLR Lexer grammar in package.
+  The generated ANTLR class grammar in package must be on the class path.
+  Prefer using lexer-parser or lexer if possible."
   ([grammar package]
    (let [arg (gensym)]
      `(do
@@ -137,6 +168,9 @@
   ([grammar] `(ANTLR-lexer ~grammar nil)))
 
 (defmacro lexer 
+  "Returns a lexer mapping a string into an array-list of Tokens defined by Lexer grammar in package.
+  The generated class grammar in package must be on the class path.
+  The returned Tokens are immutable Clojure records."
   ([grammar package]
    (let [arg (gensym)]
      `(fn [~arg]
@@ -144,12 +178,15 @@
              ANTLRInputStream.
              ((ANTLR-lexer ~grammar ~package))
              (doto (.setTokenFactory token-factory))
+             (doto .removeErrorListeners)
              .getAllTokens
              ))))
   ([grammar] `(lexer ~grammar nil)))
 
 (defmacro ANTLR-parser
-  "Generates an ANTLR type parser. Break through abstraction layer; prefer parser."
+  "Returns a function taking an ANTLR TokenStream into the ANTLR parser in package.
+  The generated ANTLR class grammar in package must be on the class path.
+  Prefer using lexer-parser or parser if possible."
   ([grammar package]
    (let [token-stream (gensym)]
      `(do
@@ -159,38 +196,44 @@
   ([grammar] `(ANTLR-parser ~grammar nil)))
 
 (defmacro parser
-  ;Inefficient for multiple partial parsers: Could share structure
+  "Returns a parser mapping a seqable of Tokens into a syntax-tree defined by grammar in package with start rule.
+  The generated ANTLR class grammar in package must be on the class path.
+  The syntax-tree is a nested array of Clojure maps.
+  The rule nodes have the structure {:src-line :name :type :children}."
   ([rule grammar package]
    (let [source (gensym)]
      `(fn [~source]
-        (->
-          ~source
-          ListTokenSource.
-          CommonTokenStream.
-          ((ANTLR-parser ~grammar ~package))
-          ;Don't print to std out
-          (doto .removeErrorListeners)
-          (doto (.setTokenFactory token-factory))
-          (. ~rule)
-          total-unwrapper))))
+        (total-unwrapper (partial unwrapper rule->map identity error->map)
+                         (->
+                           ~source
+                           ListTokenSource.
+                           BufferedTokenStream.
+                           ((ANTLR-parser ~grammar ~package))
+                           ;Don't print to std out
+                           (doto .removeErrorListeners)
+                           (doto (.setTokenFactory token-factory))
+                           (. ~rule))))))
   ([rule grammar] `(parser ~rule ~grammar nil)))
 
-
 (defmacro lexer-parser
+  "Returns a lexer-parser mapping a String into a syntax-tree defined by grammar in package with start rule.
+  The generated ANTLR class grammar in package must be on the class path.
+  The syntax-tree is a nested array of Clojure maps.
+  The rule nodes have the structure {:src-line :name :type :children}."
   ([rule grammar package]
    (let [arg (gensym)]
      `(fn [~arg]
-        (->
-          ~arg
-          ANTLRInputStream.
-          ((ANTLR-lexer ~grammar ~package))
-          CommonTokenStream.
-          ((ANTLR-parser ~grammar ~package))
-          ;Don't print errors to STDOUT
-          (doto .removeErrorListeners)
-          ;TODO: Wrap tokens
-          (. ~rule)
-          total-unwrapper))))
+        (total-unwrapper (partial unwrapper rule->map reify-token error->map)
+                         (->
+                           ~arg
+                           ANTLRInputStream.
+                           ((ANTLR-lexer ~grammar ~package))
+                           (doto .removeErrorListeners)
+                           CommonTokenStream.
+                           ((ANTLR-parser ~grammar ~package))
+                           ;Don't print errors to STDOUT
+                           (doto .removeErrorListeners)
+                           (. ~rule))))))
   ([rule grammar] `(lexer-parser ~rule ~grammar nil)))
 
 
