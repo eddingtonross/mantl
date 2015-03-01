@@ -170,6 +170,7 @@
           ((ANTLR-parser ~grammar ~package))
           ;Don't print to std out
           (doto .removeErrorListeners)
+          (doto (.setTokenFactory token-factory))
           (. ~rule)
           total-unwrapper))))
   ([rule grammar] `(parser ~rule ~grammar nil)))
@@ -187,6 +188,7 @@
           ((ANTLR-parser ~grammar ~package))
           ;Don't print errors to STDOUT
           (doto .removeErrorListeners)
+          ;TODO: Wrap tokens
           (. ~rule)
           total-unwrapper))))
   ([rule grammar] `(lexer-parser ~rule ~grammar nil)))
