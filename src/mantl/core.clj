@@ -10,6 +10,24 @@
                                       ErrorNode
                                       TerminalNode)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Interface
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;TODO: Document
+;Rules
+(defn rule? [t] (= (:type (meta t)) "rule"))
+(defn rule-name [t] (first t))
+(defn rule-children [t] (rest t))
+(defn rule-info [t] (meta t))
+
+;Tokens
+(defn token? [t] (= (:type (meta t)) "token"))
+(defn token-type [t] (first t))
+(defn token-text [t] (second t))
+(defn token-info [t] (meta t))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 ;This is an immutable equivalent of an ANTLR4 token; all it is missing is the
 ; InputStream (which by it's nature is mutable) and the
 ; TokenSource (which is often mutable). These immutable fields still (more-than)
@@ -40,6 +58,16 @@
            (.getCharPositionInLine t) 
            (.getTokenIndex t)))
 
+(defn wrap-token
+  [t]
+  (with-meta [(.getType t) (.getText t)]
+             {:type "token"
+              :channel (.getChannel t)
+              :start-index (.getStartIndex t)
+              :stop-index (.getStopIndex t)
+              :line (.getLine t)
+              :position-in-line (.getCharPositionInLine t)
+              :token-index (.getTokenIndex t)}))
 
 (def token-factory
   "An ANTLR4 TokenFactory that returns Tokens that are immutable Clojure records.
@@ -196,7 +224,7 @@
   ([grammar] `(ANTLR-parser ~grammar nil)))
 
 ;TODO: Fix EOF versus <EOF> (lexer-parser)
-;TODO: Fix no token-index
+;TODO: Fix no token-index due to immutability
 (defmacro parser
   "Returns a parser mapping a seqable of Tokens into a syntax-tree defined by grammar in package with start rule.
   The generated ANTLR class grammar in package must be on the class path.
@@ -205,7 +233,7 @@
   ([rule grammar package]
    (let [source (gensym)]
      `(fn [~source]
-        (total-unwrapper (partial unwrapper rule->map identity error->map)
+        (total-unwrapper (partial unwrapper rule->map wrap-token error->map)
                          (->
                            ~source
                            ListTokenSource.
@@ -225,7 +253,7 @@
   ([rule grammar package]
    (let [arg (gensym)]
      `(fn [~arg]
-        (total-unwrapper (partial unwrapper rule->map reify-token error->map)
+        (total-unwrapper (partial unwrapper rule->map wrap-token error->map)
                          (->
                            ~arg
                            ANTLRInputStream.
