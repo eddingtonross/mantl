@@ -126,7 +126,7 @@
 (defn total-unwrapper [u x] (tree-map u
                                     #(instance? RuleNode %)
                                     #(.children %)
-                                    #(assoc %1 :children %2)
+                                    #(with-meta (cons (:name %1) %2) (dissoc %1 :name))
                                     x))
 
 
@@ -195,6 +195,8 @@
           (new ~(parserClassname grammar) ~token-stream)))))
   ([grammar] `(ANTLR-parser ~grammar nil)))
 
+;TODO: Fix EOF versus <EOF> (lexer-parser)
+;TODO: Fix no token-index
 (defmacro parser
   "Returns a parser mapping a seqable of Tokens into a syntax-tree defined by grammar in package with start rule.
   The generated ANTLR class grammar in package must be on the class path.
