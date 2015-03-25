@@ -9,11 +9,13 @@ Now you've got your generated Grammar in package with startRule.
 
 Then, when you've got mantl on your classpath:
 
+```clojure
 (use 'mantl.core)
 ;If you don't have a package just leave out the argument package
 (def grammar-reader (lexer-parser startRule Grammar package))
 ;txt is some text you have in language Grammar
 (def ast (grammar-reader txt))
+```
 
 ## License
 
